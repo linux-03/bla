@@ -1,0 +1,3 @@
+[submodule "HPC"]
+	path = HPC
+	url = git@github.com:linux-03/HPC.git

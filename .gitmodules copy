@@ -1,0 +1,3 @@
+[submodule "HPC"]
+	path = HPC
+	url = ../HPC.git
