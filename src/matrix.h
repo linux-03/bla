@@ -112,12 +112,7 @@ public:
         if(_width != m2.Width() || _height != m2.Height()){
             throw std::invalid_argument("Matrix dimension must match for copy");
         }
-        for (size_t col = 0; col < _width; col++){
-            for(size_t row=0; row < _height; row++){
-                (*this)(row, col)+= m2(row, col);
-            }
-        }
-        return *this;
+        return *this = (*this) + m2;
     }
 
     template<typename TB>
@@ -125,19 +120,14 @@ public:
         if(m2.Height() == Height() || m2.Width() == Width()) {
             throw std::invalid_argument("incompatible shapes");
         }
-        Matrix<TB> res (Height(), Width());
-        res = m2 * *this;
 
-        return (*this)=res;
+        return (*this)= (*this) * m2;
     }
     MatrixView &operator*=(T s) {
-        Matrix<T> res{Height(), Width()};
-        res =  s*(*this) ;
-
-        return (*this)=res;
+        return (*this) = s * (*this);
     }
     MatrixView &operator/=(T s) {
-        return ((*this)*=(1./s));
+        return *this = (1./s) * (*this);
     }
 
     template<typename TB>
@@ -145,12 +135,7 @@ public:
         if(_width != m2.Width() || _height != m2.Height()){
             throw std::invalid_argument("Matrix dimension must match for copy");
         }
-        for (size_t col = 0; col < _width; col++){
-            for(size_t row=0; row < _height; row++){
-                (*this)(row, col)-= m2(row, col);
-            }
-        }
-        return *this;
+        return *this = (*this) - m2;
     }
 
 
@@ -250,7 +235,7 @@ public:
             }
         }
         if(pivot == 0) {
-            std::cout << (*this) << std::endl;
+            //std::cout << (*this) << std::endl;
             throw std::invalid_argument("Matrix singular");
         }
         RowSwap(column, pivot_i);

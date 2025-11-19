@@ -67,23 +67,17 @@ namespace ASC_bla {
 
         template<typename TB>
         VectorView &operator+=(const VecExpr<TB> &v2) {
-            Vector<T> res(Size());
-            res = (*this)+v2;
-            return (*this)=res;
+            return (*this)= (*this) + v2;
         }
         VectorView &operator*=(T s) {
-            Vector<T> res(Size());
-            res = s*(*this);
-            return (*this)=res;
+            return (*this) = s * (*this);
         }
         VectorView &operator/=(T s) {
             return ((*this)*=(1./s)); 
         }
         template<typename TB>
         VectorView &operator-=(const VecExpr<TB> &v2) {
-            Vector<T> res(Size());
-            res = (*this)+ (-1)*v2;
-            return (*this)=res;
+            return (*this)= (*this) + (-1)*v2;
         }
 
         VectorView & operator= (T scal)
@@ -143,6 +137,8 @@ namespace ASC_bla {
             return VectorView<T, size_t>(size_ / slice, dist_ * slice, data_ + first * dist_);
         }
     };
+
+    
     template <typename TA,typename TB>
     auto operator*(const VecExpr<TA>& a,const VecExpr<TB>& b){
         std::remove_cv_t<std::remove_reference_t<decltype(a(0)*b(0))>> sum = (a-a)(0);
@@ -155,22 +151,45 @@ namespace ASC_bla {
 
     template<typename T>
     class Vector : public VectorView<T> {
-        typedef VectorView<T> BASE;
+        using BASE = VectorView<T>;
         using BASE::size_;
         using BASE::data_;
     public:
-        explicit Vector(size_t size) 
-                : VectorView<T>(size, new T[size]()) { ; }
+        explicit Vector(size_t size = 0) 
+                : VectorView<T>(size, size ? new T[size]() : nullptr) { ; }
 
-        Vector(const Vector &v)
-                : Vector(v.Size()) {
-            *this = v;
+        Vector(const Vector& other)
+                : VectorView<T>(other.Size(), other.Size() ? new T[other.Size()]() : nullptr) {
+           std::copy(other.data_, other.data_ + other.size_, data_);
         }
 
-        Vector(Vector &&v)
-                : VectorView<T>(0, nullptr) {
-            std::swap(size_, v.size_);
-            std::swap(data_, v.data_);
+        Vector(Vector&& other)
+                : VectorView<T>(other.Size(), other.Data()) {
+            other.size_ = 0;
+            other.data_ = nullptr;
+        }
+
+        // deep copy assign
+        Vector& operator=(const Vector& other) {
+            if (this == &other) return *this;
+            if (size_ != other.size_) {
+                delete[] data_;
+                data_ = other.size_ ? new T[other.size_]() : nullptr;
+                size_ = other.size_;
+            }
+            std::copy(other.data_, other.data_ + size_, data_);
+            return *this;
+        }
+
+        // move assign
+        Vector& operator=(Vector&& other) noexcept {
+            if (this == &other) return *this;
+            delete[] data_;
+            data_ = other.data_;
+            size_ = other.size_;
+            other.data_ = nullptr;
+            other.size_ = 0;
+            return *this;
         }
 
         template<typename TB>
@@ -206,18 +225,6 @@ namespace ASC_bla {
             return *this;
         }
 
-        Vector &operator=(const Vector &v2) {
-            for (size_t i = 0; i < size_; i++)
-                data_[i] = v2(i);
-            return *this;
-        }
-
-        Vector &operator=(Vector &&v2) {
-            for (size_t i = 0; i < size_; i++)
-                data_[i] = v2(i);
-            return *this;
-        }
-
     };
 
 
@@ -236,6 +243,39 @@ namespace ASC_bla {
             sum+=v(i)*v(i);
         return sqrt(sum);
         
+    }
+
+    template<typename T>
+    Vector<T> cross3(const VectorView<T> a,const VectorView<T> b){
+        Vector<T> res(3);
+        res(0)=a(1)*b(2)-a(2)*b(1);
+        res(1)=a(2)*b(0)-a(0)*b(2);
+        res(2)=a(0)*b(1)-a(1)*b(0);
+        return res;
+    }
+
+    template<typename T>
+    std::pair<Vector<T>, Vector<T>> normal_plane_basis(const VectorView<T> v){
+        Vector<T> b1(3);
+        Vector<T> b2(3);
+        if(fabs(v(0))>fabs(v(1))){
+            T invLen=1.0/sqrt(v(0)*v(0)+v(2)*v(2));
+            
+            b1(0)=-v(2)*invLen;
+            b1(1)=0;
+            b1(2)=v(0)*invLen;
+        } else {
+            T invLen=1.0/sqrt(v(1)*v(1)+v(2)*v(2));
+            b1(0)=0;
+            b1(1)=v(2)*invLen;
+            b1(2)=-v(1)*invLen;
+        }
+        b2=cross3(v,b1);
+        double nrm_b1=1/Norm(b1);
+        double nrm_b2=1/Norm(b2);
+        b1 = b1 * nrm_b1;
+        b2 = b2 * nrm_b2;
+        return std::make_pair(b1,b2);
     }
 
     template<size_t S, typename T = double>
