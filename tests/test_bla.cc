@@ -202,6 +202,47 @@ void test_fastmul_all_shapes() {
       }
 }
 
+void test_products_through_kernel() {
+  // Every combination of layouts, transposes and sub-views, against the naive product.
+  for (size_t m : {1, 7, 13, 130})
+    for (size_t k : {1, 9, 300})
+      for (size_t n : {1, 8, 17, 70}) {
+        Matrix<double> a(m, k), bt(n, k);
+        Matrix<double, Ordering::ColMajor> b(k, n);
+        fill(a, 0.2); fill(b, 1.1); fill(bt, 2.3);
+        Matrix<double> want = naiveProduct(a, Matrix<double>(b));
+        Matrix<double> c(m, n);
+        c = a * b;
+        check(maxDiff(c, want) < 1e-12, "row-major times column-major");
+        Matrix<double, Ordering::ColMajor> cc(m, n);
+        cc = a * bt.transpose();
+        check(maxDiff(cc, naiveProduct(a, Matrix<double>(bt.transpose()))) < 1e-12, "times a transposed matrix");
+        Matrix<double> big(m + 2, n + 3);
+        big.Block(1, 2, m, n) = a * b;
+        check(maxDiff(big.Block(1, 2, m, n), want) < 1e-12, "product into a sub-view");
+        check(big(0, 0) == 0 && big(m + 1, n + 2) == 0, "product into a sub-view leaves the rest alone");
+      }
+}
+
+void test_nested_and_aliased_products() {
+  const size_t n = 40;
+  Matrix<double> a(n, n), b(n, n), c(n, n);
+  fill(a, 0.1); fill(b, 0.5); fill(c, 0.9);
+  Matrix<double> want = naiveProduct(naiveProduct(a, b), c);
+  Matrix<double> got = (a * b) * c;
+  check(maxDiff(got, want) < 1e-10, "(A*B)*C");
+  Matrix<double> got2 = a * (b * c);
+  check(maxDiff(got2, want) < 1e-10, "A*(B*C)");
+  Matrix<double> scaled = (2.0 * a) * b;
+  check(maxDiff(scaled, 2.0 * naiveProduct(a, b)) < 1e-11, "(2A)*B");
+  Matrix<double> x = a;
+  x = x * b;
+  check(maxDiff(x, naiveProduct(a, b)) < 1e-11, "X = X*B");
+  Matrix<double> y = b;
+  y = a * y;
+  check(maxDiff(y, naiveProduct(a, b)) < 1e-11, "Y = A*Y");
+}
+
 void test_inverse() {
   Matrix<double> a(5, 5);
   fill(a, 0.9);
@@ -300,6 +341,8 @@ const std::map<std::string, std::function<void()>>& allTests() {
       {"matrix_assignment", test_matrix_assignment},
       {"fastmul_all_shapes", test_fastmul_all_shapes},
       {"inverse", test_inverse},
+      {"products_through_kernel", test_products_through_kernel},
+      {"nested_and_aliased_products", test_nested_and_aliased_products},
       {"rotation_matrices", test_rotation_matrices},
       {"fixed_size_matrix", test_fixed_size_matrix},
       {"autodiff_derivatives", test_autodiff_derivatives},

@@ -12,7 +12,7 @@ namespace ASC_bla {
     template<typename T>
     class VecExpr {
     public:
-        auto Upcast() const { return static_cast<const T &> (*this); }
+        const T & Upcast() const { return static_cast<const T &> (*this); }
 
         size_t Size() const { return Upcast().Size(); }
 
@@ -22,7 +22,7 @@ namespace ASC_bla {
     template<typename T>
     class MatrixExpr {
     public:
-        auto Upcast() const { return static_cast<const T &> (*this); }
+        const T & Upcast() const { return static_cast<const T &> (*this); }
 
         size_t Width() const { return Upcast().Width(); }
         size_t Height() const { return Upcast().Height(); }
@@ -120,7 +120,7 @@ namespace ASC_bla {
         TA a_;
         TB b_;
     public:
-        MultiplyMatrixExpr(TA a, TB b):a_(a),b_(b){
+        MultiplyMatrixExpr(TA a, TB b):a_(std::move(a)),b_(std::move(b)){
             if(a_.Width() != b_.Height()){
                 throw std::invalid_argument("Matrix dimension must match for multiplication");
             }
@@ -135,11 +135,19 @@ namespace ASC_bla {
         }
         size_t Width() const { return b_.Width(); }
         size_t Height() const { return a_.Height(); }
+        const TA & A() const { return a_; }
+        const TB & B() const { return b_; }
     };
+
+    // Turns a matrix operand into something cheap to index repeatedly: views and
+    // matrices stay as they are (as views), any other expression is evaluated once.
+    // Without this, (A*B)*C would recompute A*B inside every entry: O(n^4) work.
+    template<typename T>
+    auto Evaluated(const MatrixExpr<T> & m);
 
     template<typename TA, typename TB>
     auto operator*(const MatrixExpr<TA> &a, const MatrixExpr<TB> &b) {
-        return MultiplyMatrixExpr(a.Upcast(), b.Upcast());
+        return MultiplyMatrixExpr(Evaluated(a), Evaluated(b));
     }
 
     template<typename TM, typename TV>

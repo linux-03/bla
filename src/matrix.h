@@ -13,6 +13,8 @@
 #include "expression.h"
 #include "vector.h"
 #include "simd.h"
+#include "gemm.h"
+#include <type_traits>
 
 namespace ASC_bla {
     using ASC_HPC::SIMD;
@@ -29,6 +31,25 @@ class Matrix;
 
 template<size_t HEIGHT, size_t WIDTH, typename T=double, Ordering ORD=Ordering::RowMajor>
 class Mat;
+
+template <typename T>
+struct is_double_product : std::false_type {};
+
+template <Ordering OA, Ordering OB>
+struct is_double_product<MultiplyMatrixExpr<MatrixView<double,OA>, MatrixView<double,OB>>> : std::true_type {};
+
+template <Ordering OA, Ordering OB>
+struct is_double_product<MultiplyMatrixExpr<MatrixView<double,OA>, Matrix<double,OB>>> : std::true_type {};
+
+template <Ordering OA, Ordering OB>
+struct is_double_product<MultiplyMatrixExpr<Matrix<double,OA>, MatrixView<double,OB>>> : std::true_type {};
+
+template <Ordering OA, Ordering OB>
+struct is_double_product<MultiplyMatrixExpr<Matrix<double,OA>, Matrix<double,OB>>> : std::true_type {};
+
+// c = a * b through the blocked kernel; defined after Matrix.
+template <Ordering OC, typename TPROD>
+void AssignProduct(MatrixView<double, OC> c, const TPROD & product);
 
 template <typename T, Ordering ORD>
 class MatrixView : public MatrixExpr<MatrixView<T,ORD>>{
@@ -78,6 +99,10 @@ public:
     MatrixView &operator=(const MatrixExpr<TB> &m2) {
         if(_width != m2.Width() || _height != m2.Height()){
             throw std::invalid_argument("Matrix dimension must match for copy");
+        }
+        if constexpr (std::is_same_v<T, double> && is_double_product<TB>::value) {
+            AssignProduct(*this, m2.Upcast());
+            return *this;
         }
         for (size_t col = 0; col < _width; col++){
             for(size_t row=0; row < _height; row++){
@@ -305,6 +330,10 @@ public:
         if(_width != m2.Width() || _height != m2.Height()){
             throw std::invalid_argument("Matrix dimension must match for copy");
         }
+        if constexpr (std::is_same_v<T, double> && is_double_product<TB>::value) {
+            AssignProduct(MatrixView<T,ORD>(*this), m2.Upcast());
+            return *this;
+        }
         for (size_t col = 0; col < _width; col++){
             for(size_t row=0; row < _height; row++){
                 (*this)(row, col)= m2(row, col);
@@ -472,148 +501,81 @@ MatrixView<T, ORD==Ordering::RowMajor ? Ordering::ColMajor : Ordering::RowMajor>
     return m.transpose();
 }
 
-template <size_t SW>
-auto InnerProduct4 (size_t n, double * px0, double * px1, double * px2, double * px3, double * py, size_t dy)
-{
-    SIMD<double,SW> sum0{0.0};
-    SIMD<double,SW> sum1{0.0};
-    SIMD<double,SW> sum2{0.0};
-    SIMD<double,SW> sum3{0.0};
-    for (size_t i = 0; i < n; i++)
-    {
-        // sum += px[i] * SIMD<double,SW>(py+i*dy);
-        SIMD<double,SW> yi(py+i*dy);
-        sum0 = FMA(SIMD<double,SW>(px0[i]), yi, sum0);
-        sum1 = FMA(SIMD<double,SW>(px1[i]), yi, sum1);
-        sum2 = FMA(SIMD<double,SW>(px2[i]), yi, sum2);
-        sum3 = FMA(SIMD<double,SW>(px3[i]), yi, sum3);
-    }
-    return std::tuple(sum0, sum1, sum2, sum3);
+template <typename T>
+auto Evaluated(const MatrixExpr<T> & m) {
+    using Elem = std::remove_cv_t<std::remove_reference_t<decltype(m.Upcast()(0,0))>>;
+    if constexpr (std::is_base_of_v<MatrixView<Elem, Ordering::RowMajor>, T> ||
+                  std::is_base_of_v<MatrixView<Elem, Ordering::ColMajor>, T>)
+        return m.Upcast().View();
+    else
+        return Matrix<Elem>(m.Upcast());
 }
 
-template <size_t SW>
-auto InnerProduct (size_t n, double * px, double * py, size_t dy)
-{
-  SIMD<double,SW> sum{0.0};
-  for (size_t i = 0; i < n; i++)
-    {
-      // sum += px[i] * SIMD<double,SW>(py+i*dy);
-      sum = FMA(SIMD<double,SW>(px[i]), SIMD<double,SW>(py+i*dy), sum);
+namespace detail {
+    // Strides of element (i, j): data[i * rs + j * cs].
+    template <typename T, Ordering ORD>
+    std::pair<ptrdiff_t, ptrdiff_t> Strides(const MatrixView<T, ORD> & m) {
+        if constexpr (ORD == Ordering::RowMajor) return { ptrdiff_t(m.Dist()), 1 };
+        else return { 1, ptrdiff_t(m.Dist()) };
     }
-  return sum;
+
+    // Address range of a view, for the overlap test.
+    template <typename T, Ordering ORD>
+    std::pair<const T*, const T*> Extent(const MatrixView<T, ORD> & m) {
+        if (m.Height() == 0 || m.Width() == 0) return { m.Data(), m.Data() };
+        const T * first = m.Data();
+        return { first, &m(m.Height()-1, m.Width()-1) + 1 };
+    }
+
+    template <typename T, Ordering O1, Ordering O2>
+    bool Overlap(const MatrixView<T, O1> & x, const MatrixView<T, O2> & y) {
+        auto [x0, x1] = Extent(x);
+        auto [y0, y1] = Extent(y);
+        return x0 < y1 && y0 < x1;
+    }
 }
 
+template <Ordering OC, typename TPROD>
+void AssignProduct(MatrixView<double, OC> c, const TPROD & product) {
+    auto a = product.A().View();
+    auto b = product.B().View();
+    const size_t m = c.Height(), n = c.Width(), k = a.Width();
+    const bool overlap = detail::Overlap(c, a) || detail::Overlap(c, b);
+    if (m * n * k <= 64 && !overlap) {
+        // Tiny products (3x3 and similar): a direct loop beats the kernel's setup.
+        auto [rsa, csa] = detail::Strides(a);
+        auto [rsb, csb] = detail::Strides(b);
+        auto [rsc, csc] = detail::Strides(c);
+        const double * pa = a.Data();
+        const double * pb = b.Data();
+        double * pc = c.Data();
+        for (size_t i = 0; i < m; i++)
+            for (size_t j = 0; j < n; j++) {
+                double sum = 0;
+                for (size_t q = 0; q < k; q++) sum += pa[i * rsa + q * csa] * pb[q * rsb + j * csb];
+                pc[i * rsc + j * csc] = sum;
+            }
+        return;
+    }
+    if (overlap) {
+        // c = c * b and similar: compute into fresh storage first.
+        Matrix<double, OC> tmp(c.Height(), c.Width());
+        AssignProduct(MatrixView<double, OC>(tmp), product);
+        c = tmp;
+        return;
+    }
+    auto [rsa, csa] = detail::Strides(a);
+    auto [rsb, csb] = detail::Strides(b);
+    auto [rsc, csc] = detail::Strides(c);
+    Gemm(c.Height(), c.Width(), a.Width(), 1.0, a.Data(), rsa, csa, b.Data(), rsb, csb, 0.0, c.Data(), rsc, csc);
+}
 
+// Kept for compatibility: the blocked kernel now handles every shape and layout.
 inline Matrix<double> fastMul (MatrixView<double, Ordering::RowMajor> a, MatrixView<double, Ordering::RowMajor> b) {
     if(b.Height()!=a.Width())
         throw std::invalid_argument("Matrix dimension must match for multiplication");
-
-    size_t n = a.Width();
-    size_t m = a.Height();
-    size_t l = b.Width();
-
-    Matrix<double> res(m,l);
-    size_t zeilenrest = m % 4;
-    size_t spaltenrest = l % 12;
-
-    for (size_t i = 0; i < m / 4; i++) { // Viererpaare von Zeilen
-        size_t zeilendist = a.Dist();
-        auto zeilenstart = a.Data() + i * 4 * zeilendist;
-
-        for (size_t j = 0; j < l / 12; j++) {
-            // inner prod
-            size_t spaltenindex = j * 12;
-            auto ptr = b.Data() + spaltenindex;
-
-            auto [sum0, sum1, sum2, sum3] = InnerProduct4<12>(
-                n,
-                zeilenstart,
-                zeilenstart + zeilendist,
-                zeilenstart + 2 * zeilendist,
-                zeilenstart + 3 * zeilendist,
-                ptr,
-                b.Dist()
-            );
-
-            sum0.Store(res.Data() + (i*4)*res.Dist() + spaltenindex);
-            sum1.Store(res.Data() + (i*4+1)*res.Dist() + spaltenindex);
-            sum2.Store(res.Data() + (i*4+2)*res.Dist() + spaltenindex);
-            sum3.Store(res.Data() + (i*4+3)*res.Dist() + spaltenindex);
-        }
-        size_t lastindex = (l/12)*12;
-
-        for (size_t j = lastindex; j < lastindex + spaltenrest; j++) {
-            // rest spalten mit kleinem simd
-            auto [sum0, sum1, sum2, sum3] = InnerProduct4<1>(
-                n,
-                zeilenstart,
-                zeilenstart + zeilendist,
-                zeilenstart + 2 * zeilendist,
-                zeilenstart + 3 * zeilendist,
-                b.Data()+j,
-                b.Dist()
-            );
-
-            sum0.Store(res.Data() + (i*4)*res.Dist() + j);
-            sum1.Store(res.Data() + (i*4+1)*res.Dist() + j);
-            sum2.Store(res.Data() + (i*4+2)*res.Dist() + j);
-            sum3.Store(res.Data() + (i*4+3)*res.Dist() + j);
-        }
-    }
-
-    size_t lastrow = (m/4)*4;  // rows left over after the blocks of four
-    // zeilenrest
-    for (size_t i = lastrow; i < lastrow + zeilenrest; i++) { // einzelne rest-zeilen
-        size_t zeilendist = a.Dist();
-        auto zeilenstart = a.Data() + i * zeilendist;
-
-        for (size_t j = 0; j < l / 12; j++) {
-            // inner prod
-            size_t spaltenindex = j * 12;
-            auto ptr = b.Data() + spaltenindex;
-
-            auto sum = InnerProduct<12>(
-                n,
-                zeilenstart,
-                ptr,
-                b.Dist()
-            );
-
-            sum.Store(res.Data() + i*res.Dist() + spaltenindex);
-        }
-
-        size_t lastindex = (l/12)*12;
-        for (size_t j = lastindex; j < lastindex + spaltenrest; j++) {
-            // rest spalten mit kleinem simd
-            auto sum = InnerProduct<1>(
-                n,
-                zeilenstart,
-                b.Data()+j,
-                b.Dist()
-            );
-
-            sum.Store(res.Data() + i*res.Dist() + j);
-        }
-    }
-
-
-    // Matrix<double> res{a.Height(),b.Width()};
-    // for(int i=0;i<res.Height();i++){
-    //     for(int j=0;j<res.Width();j++){
-    //         auto result = SIMD<double,4>(0.);
-    //         int rest = b.Height()%4;
-    //         for(int l=0; l<b.Height()/4; l++) {
-    //             result = FMA(SIMD<double,4>(a.Data()+a.Dist()*i+4*l), SIMD<double,4>(b(0+4*l,j),b(1+4*l,j),b(2+4*l,j),b(3+4*l,j)), result);
-    //         }
-    //         double sum = HSum(result);
-    //         for(int l=rest; l>0; l--) {
-    //             int og_index = b.Height()-rest;
-    //             sum += a(i,og_index) * b(og_index,j);
-    //         }
-    //         res(i,j)=sum;
-    //     }
-    // }
-
+    Matrix<double> res(a.Height(), b.Width());
+    res = a * b;
     return res;
 }
 
