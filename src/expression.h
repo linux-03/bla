@@ -1,6 +1,8 @@
 #ifndef FILE_EXPRESSION_H
 #define FILE_EXPRESSION_H
 #include <exception>
+#include <stdexcept>
+#include <type_traits>
 #include <iostream>
 #include <utility>
 #include <autodiff.h>
@@ -44,7 +46,10 @@ namespace ASC_bla {
         TA a_;
         TB b_;
     public:
-        SumMatrixExpr(TA a, TB b):a_(a),b_(b){}
+        SumMatrixExpr(TA a, TB b):a_(a),b_(b){
+            if(a_.Width() != b_.Width() || a_.Height() != b_.Height())
+                throw std::invalid_argument("Matrix dimension must match for addition");
+        }
         auto operator()(size_t row, size_t col) const { return a_(row,col) + b_(row,col); }
         size_t Width() const { return a_.Width(); }
         size_t Height() const { return a_.Height(); }
@@ -55,7 +60,10 @@ namespace ASC_bla {
         TA a_;
         TB b_;
     public:
-        SubstMatrixExpr(TA a, TB b):a_(a),b_(b){}
+        SubstMatrixExpr(TA a, TB b):a_(a),b_(b){
+            if(a_.Width() != b_.Width() || a_.Height() != b_.Height())
+                throw std::invalid_argument("Matrix dimension must match for subtraction");
+        }
         auto operator()(size_t row, size_t col) const {
             /*std::cout << "start substract" << "\n";
             std::cout << "row:" << row << " col:" << col << "\n"; 
@@ -112,12 +120,14 @@ namespace ASC_bla {
         TA a_;
         TB b_;
     public:
-        MultiplyMatrixExpr(TA a, TB b):a_(a),b_(b){}
-        auto operator()(size_t row, size_t col) const {
+        MultiplyMatrixExpr(TA a, TB b):a_(a),b_(b){
             if(a_.Width() != b_.Height()){
                 throw std::invalid_argument("Matrix dimension must match for multiplication");
             }
-            std::remove_cv_t<std::remove_reference_t<decltype(a_(0,0)*b_(0,0))>> sum = a_(0,0)*b_(0,0) - a_(0,0)*b_(0,0); //TODO: Zero element of T
+        }
+        auto operator()(size_t row, size_t col) const {
+            // Start from a true zero. Starting from x - x gives NaN when x is Inf or NaN.
+            std::remove_cv_t<std::remove_reference_t<decltype(a_(0,0)*b_(0,0))>> sum{};
             for (size_t i = 0; i < a_.Width(); i++) {
                 sum = sum + (a_(row, i) * b_(i, col));
             }
@@ -137,13 +147,14 @@ namespace ASC_bla {
         TM _m;
         TV _v;
     public:
-        MatrixMulVecExpr(TM m, TV v) : _m(m), _v(v) {}
-
-        auto operator()(size_t row) const {
+        MatrixMulVecExpr(TM m, TV v) : _m(m), _v(v) {
             if(_m.Width() != _v.Size()){
                 throw std::invalid_argument("Matrix/Vector dimension must match for multiplication");
             }
-            std::remove_cv_t<std::remove_reference_t<decltype(_m(0,0)*_v(0))>> sum = _v(0)*_m(0,0)-_v(0)*_m(0,0); //TODO: Zero element of ElemT
+        }
+
+        auto operator()(size_t row) const {
+            std::remove_cv_t<std::remove_reference_t<decltype(_m(0,0)*_v(0))>> sum{};
             for (size_t i = 0; i < _v.Size(); i++) {
                 sum += _m(row, i) * _v(i);
             }
@@ -183,7 +194,10 @@ namespace ASC_bla {
         TA a_;
         TB b_;
     public:
-        SumVecExpr(TA a, TB b) : a_(a), b_(b) {}
+        SumVecExpr(TA a, TB b) : a_(a), b_(b) {
+            if(a_.Size() != b_.Size())
+                throw std::invalid_argument("Vector size must match for addition");
+        }
 
         auto operator()(size_t i) const { return a_(i) + b_(i); }
 

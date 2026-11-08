@@ -13,14 +13,20 @@ py::class_<Vector<double>> (m, "Vector", py::module_local())
     if (i < 0 || i >= self.Size()) throw py::index_error("vector index out of range");
     self(i) = v;
     })
-    .def("__getitem__", [](Vector<double> & self, int i) { return self(i); })
-    
+    .def("__getitem__", [](Vector<double> & self, int i) {
+    if (i < 0) i += self.Size();
+    if (i < 0 || i >= int(self.Size())) throw py::index_error("vector index out of range");
+    return self(i);
+    })
+
     .def("__setitem__", [](Vector<double> & self, py::slice inds, double val)
     {
-    size_t start, stop, step, n;
+    // compute() returns the slice length n, which also handles negative steps.
+    py::ssize_t start, stop, step, n;
     if (!inds.compute(self.Size(), &start, &stop, &step, &n))
         throw py::error_already_set();
-    self.Range(start, stop+1).Slice(0,step) = val;
+    for (py::ssize_t k = 0; k < n; k++)
+        self(start + k*step) = val;
     })
     
     .def("__add__", [](Vector<double> & self, Vector<double> & other)
@@ -63,11 +69,10 @@ py::class_<Vec<3>> (m, "Vec3", py::module_local())
     if (i < 0 || i >= self.Size()) throw py::index_error("vector index out of range");
     self(i) = v;
     })
-    .def("__getitem__", [](Vec<3> & self, int i) { return self(i); })
-    
-    .def("__setitem__", [](Vec<3> & self, int i, double val)
-    {
-    self(i) = val;
+    .def("__getitem__", [](Vec<3> & self, int i) {
+    if (i < 0) i += self.Size();
+    if (i < 0 || i >= int(self.Size())) throw py::index_error("vector index out of range");
+    return self(i);
     })
     
     .def("__str__", [](const Vec<3> & self)
@@ -93,6 +98,10 @@ py::class_<Matrix<double,Ordering::RowMajor>> (m, "Matrix", py::buffer_protocol(
     })
     .def("__getitem__", [](Matrix<double,Ordering::RowMajor> & self, std::tuple<int,int> shape) {
     auto [row, col] = shape;
+    if (row < 0) row += self.Height();
+    if (col < 0) col += self.Width();
+    if (row < 0 || row >= int(self.Height())) throw py::index_error("matrix row out of range");
+    if (col < 0 || col >= int(self.Width())) throw py::index_error("matrix col out of range");
     return self(row, col);
     })
     .def("inverse", [](Matrix<double,Ordering::RowMajor> & self) {
@@ -100,7 +109,6 @@ py::class_<Matrix<double,Ordering::RowMajor>> (m, "Matrix", py::buffer_protocol(
     })
 
     .def_buffer([](Matrix<double,Ordering::RowMajor> &m) -> py::buffer_info {
-    std::cout << "Using buffer protocol ...";
     return py::buffer_info(
         &m(0,0),                               /* Pointer to buffer */
         sizeof(double),                          /* Size of one scalar */

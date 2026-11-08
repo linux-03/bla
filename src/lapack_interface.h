@@ -82,9 +82,9 @@ namespace ASC_bla
   
     double alpha = 1.0;
     double beta = 0;
-    integer lda = std::max(a.Dist(), 1ul);
-    integer ldb = std::max(b.Dist(), 1ul);
-    integer ldc = std::max(c.Dist(), 1ul);
+    integer lda = std::max<integer>(a.Dist(), 1);
+    integer ldb = std::max<integer>(b.Dist(), 1);
+    integer ldc = std::max<integer>(c.Dist(), 1);
 
     int err =
       dgemm_ (&transa_, &transb_, &n, &m, &k, &alpha, 
@@ -96,7 +96,8 @@ namespace ASC_bla
                         MatrixView<double, OB> b,
                         MatrixView<double, Ordering::RowMajor> c)
   {
-    MultMatMatLapack (Transpose(b), Transpose(a), Transpose(c));
+    // C = A*B in row-major storage is C^T = B^T * A^T in column-major storage.
+    MultMatMatLapack (b.transpose(), a.transpose(), c.transpose());
   }
 
 
@@ -110,16 +111,19 @@ namespace ASC_bla
   public:
     LapackLU (Matrix<double,ORD> _a)
       : a(std::move(_a)), ipiv(a.Height()) {
-      integer m = a.Height();
-      if (m == 0) return;
-      integer n = a.Width();
+      if (a.Height() != a.Width())
+        throw std::invalid_argument("LapackLU needs a square matrix");
+      integer n = a.Height();
+      if (n == 0) return;
       integer lda = a.Dist();
       integer info;
-    
-      // int dgetrf_(integer *m, integer *n, doublereal *a, 
+
+      // int dgetrf_(integer *m, integer *n, doublereal *a,
       //             integer * lda, integer *ipiv, integer *info);
-      // std::cout << a;
-      dgetrf_(&n, &m, a.Data(), &lda, ipiv.data(), &info);
+      // A row-major matrix is factored as its transpose; Solve and Inverse account for that.
+      dgetrf_(&n, &n, a.Data(), &lda, ipiv.data(), &info);
+      if (info < 0) throw std::invalid_argument("dgetrf: invalid argument " + std::to_string(-info));
+      if (info > 0) throw std::domain_error("LapackLU: matrix is singular");
     }
     
     // b overwritten with A^{-1} b
@@ -135,7 +139,10 @@ namespace ASC_bla
       //             doublereal *a, integer *lda, integer *ipiv,
       //             doublereal *b, integer *ldb, integer *info);
 
-      dgetrs_(&transa, &n, &nrhs, a.Data(), &lda, (integer*)ipiv.data(), b.Data(), &ldb, &info);
+      if (b.Size() != size_t(n))
+        throw std::invalid_argument("LapackLU::Solve: right-hand side has the wrong size");
+      dgetrs_(&transa, &n, &nrhs, const_cast<double*>(a.Data()), &lda, (integer*)ipiv.data(), b.Data(), &ldb, &info);
+      if (info != 0) throw std::invalid_argument("dgetrs failed with code " + std::to_string(info));
     }
   
     Matrix<double,ORD> Inverse() { // rvalue reference return removed
@@ -154,6 +161,7 @@ namespace ASC_bla
       lwork = integer(hwork);
       std::vector<double> work(lwork);
       dgetri_(&n, &a(0,0), &lda, ipiv.data(), &work[0], &lwork, &info);
+      if (info != 0) throw std::domain_error("dgetri failed with code " + std::to_string(info));
       return std::move(a);      
     }
 

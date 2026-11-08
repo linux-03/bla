@@ -4,6 +4,8 @@
 #include <iostream>
 #include <math.h>
 #include <initializer_list>
+#include <cmath>
+#include <stdexcept>
 #include "expression.h"
 
 
@@ -34,7 +36,7 @@ namespace ASC_bla {
 
         VectorView &operator=(const VectorView &v2) { // copy assign
             if(size_ != v2.size_)
-                throw std::invalid_argument("Vector size must mazch");
+                throw std::invalid_argument("Vector size must match");
             for (size_t i = 0; i < size_; i++)
                 data_[dist_ * i] = v2(i);
             return *this;
@@ -43,7 +45,7 @@ namespace ASC_bla {
 
         VectorView &operator=(VectorView &&v2) { // move assign
             if(size_ != v2.size_)
-                throw std::invalid_argument("Vector size must mazch");
+                throw std::invalid_argument("Vector size must match");
             for (size_t i = 0; i < size_; i++)
                 data_[dist_ * i] = v2(i);
             return *this;
@@ -52,6 +54,8 @@ namespace ASC_bla {
 
         template<typename TB>
         VectorView &operator=(const VecExpr<TB> &v2) {
+            if(size_ != v2.Size())
+                throw std::invalid_argument("Vector size must match");
             for (size_t i = 0; i < size_; i++)
                 data_[dist_ * i] = v2(i);
             return *this;
@@ -60,6 +64,8 @@ namespace ASC_bla {
         template <typename TB>
         VectorView & operator= (std::initializer_list<TB> list)
         {
+            if(size_ != list.size())
+                throw std::invalid_argument("initializer list does not match vector size");
             for (size_t i = 0; i < size_; i++)
                 data_[dist_*i] = list.begin()[i];
             return *this;
@@ -97,6 +103,7 @@ namespace ASC_bla {
 
 
         T* Data(){return data_;}
+        const T* Data() const {return data_;}
         auto View() const { return VectorView(size_, dist_, data_); }
         size_t Size() const { return size_; }
         auto Dist() const { return dist_; }
@@ -134,14 +141,17 @@ namespace ASC_bla {
         }
 
         auto Slice(size_t first, size_t slice) const {
-            return VectorView<T, size_t>(size_ / slice, dist_ * slice, data_ + first * dist_);
+            // Every slice-th entry from first on: ceil((size - first) / slice) entries.
+            return VectorView<T, size_t>((size_ - first + slice - 1) / slice, dist_ * slice, data_ + first * dist_);
         }
     };
 
     
     template <typename TA,typename TB>
     auto operator*(const VecExpr<TA>& a,const VecExpr<TB>& b){
-        std::remove_cv_t<std::remove_reference_t<decltype(a(0)*b(0))>> sum = (a-a)(0);
+        if(a.Size() != b.Size())
+            throw std::invalid_argument("Vector size must match for the inner product");
+        std::remove_cv_t<std::remove_reference_t<decltype(a(0)*b(0))>> sum{};
         for(size_t i=0; i<a.Size();i++){
             sum += a(i)*b(i);
         }
@@ -220,6 +230,8 @@ namespace ASC_bla {
 
         template<typename TB>
         Vector &operator=(const VecExpr<TB> &v2) {
+            if(size_ != v2.Size())
+                throw std::invalid_argument("Vector size must match");
             for (size_t i = 0; i < size_; i++)
                 data_[i] = v2(i);
             return *this;
@@ -258,7 +270,9 @@ namespace ASC_bla {
     std::pair<Vector<T>, Vector<T>> normal_plane_basis(const VectorView<T> v){
         Vector<T> b1(3);
         Vector<T> b2(3);
-        if(fabs(v(0))>fabs(v(1))){
+        if(v(0) == 0 && v(1) == 0 && v(2) == 0)
+            throw std::invalid_argument("normal_plane_basis needs a nonzero vector");
+        if(std::fabs(v(0))>std::fabs(v(1))){
             T invLen=1.0/sqrt(v(0)*v(0)+v(2)*v(2));
             
             b1(0)=-v(2)*invLen;

@@ -177,10 +177,10 @@ int main()
 
   }
   std::cout << p;
-  p=p.Transpose();
-  std::cout << p.Transpose();
+  p = Matrix<double>(p.transpose());
+  std::cout << Matrix<double>(p.transpose());
   std::cout << "L:\n";
-  Matrix<double> p2 = q.Transpose();
+  Matrix<double> p2 = q.transpose();
   std::cout << p2;
   LapackLU<Ordering::RowMajor> lu(p2);
   auto l = lu.LFactor();

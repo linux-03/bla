@@ -2,9 +2,8 @@
 #define FILE_AUTODIFF_CC
 
 #include <iostream>
-#include <math.h>
-
-using namespace std;
+#include <cmath>
+#include <type_traits>
 
 namespace ASC_bla
 {
@@ -64,6 +63,10 @@ namespace ASC_bla
             ddval[i] = 0;
         }
         */
+
+        /// init object with (val, e_diffindex); the int overload keeps AutoDiff(x, 0) unambiguous
+        AutoDiff  (SCAL aval, int diffindex)  throw()
+            : AutoDiff(aval, size_t(diffindex)) { }
 
         /// init object with (val, e_diffindex)
         AutoDiff  (SCAL aval, size_t diffindex)  throw()
@@ -264,7 +267,7 @@ namespace ASC_bla
     };
 
     template<size_t D, typename SCAL>
-    inline ostream & operator<< (ostream & ost, const AutoDiff<D,SCAL> & x)
+    inline std::ostream & operator<< (std::ostream & ost, const AutoDiff<D,SCAL> & x)
     {
         ost << x.Value() << ", D = ";
         for (int i = 0; i < D; i++)
@@ -481,8 +484,9 @@ namespace ASC_bla
 
     using std::sqrt;
     template<size_t D, typename SCAL>
-    inline AutoDiff<D, SCAL> sqrt (AutoDiff<D, SCAL> & x) throw()
+    inline AutoDiff<D, SCAL> sqrt (const AutoDiff<D, SCAL> & x) throw()
     {
+        using std::sqrt;
         AutoDiff<D, SCAL> res;
         res.Value() = sqrt(x.Value());
         for (size_t j = 0; j < D; j++)  {
@@ -497,6 +501,7 @@ namespace ASC_bla
     template <size_t D, typename SCAL>
     inline AutoDiff<D, SCAL> exp (AutoDiff<D, SCAL> x)
     {
+        using std::exp;
         AutoDiff<D, SCAL> res;
         res.Value() = exp(x.Value());
         for (size_t k = 0; k < D; k++) {
@@ -513,6 +518,7 @@ namespace ASC_bla
     template <size_t D, typename SCAL>
     inline AutoDiff<D, SCAL> log (AutoDiff<D, SCAL> x)
     {
+        using std::log;
         AutoDiff<D, SCAL> res;
         res.Value() = log(x.Value());
         SCAL xinv = 1.0/x.Value();
@@ -538,9 +544,16 @@ namespace ASC_bla
     template <size_t D, typename SCAL>
     inline AutoDiff<D, SCAL> pow (AutoDiff<D, SCAL> x, SCAL y)
     {
-        AutoDiff<D, SCAL> y_diff(y);
-        
-        return pow(x, y_diff);
+        // Direct power rule, so negative and zero bases work for real exponents
+        // where the result is defined (exp(y*log(x)) would give NaN there).
+        using std::pow;
+        AutoDiff<D, SCAL> res;
+        res.Value() = pow(x.Value(), y);
+        const SCAL factor = (y == SCAL(0)) ? SCAL(0) : y * pow(x.Value(), y - SCAL(1));
+        for (size_t k = 0; k < D; k++) {
+            res.DValue(k) = factor * x.DValue(k);
+        }
+        return res;
     }
 
     template <size_t D, typename SCAL>

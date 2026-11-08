@@ -14,10 +14,9 @@
 #include "vector.h"
 #include "simd.h"
 
-using namespace ASC_HPC;
-using namespace std;
-
 namespace ASC_bla {
+    using ASC_HPC::SIMD;
+    using ASC_HPC::FMA;
     enum class Ordering {
         ColMajor, RowMajor
     };
@@ -117,11 +116,12 @@ public:
 
     template<typename TB>
     MatrixView &operator*=(const MatrixExpr<TB> &m2) {
-        if(m2.Height() == Height() || m2.Width() == Width()) {
+        if(m2.Height() != Width() || m2.Width() != Width()) {
             throw std::invalid_argument("incompatible shapes");
         }
-
-        return (*this)= (*this) * m2;
+        // Evaluate first: writing into *this while reading it would corrupt the result.
+        Matrix<T, ORD> product = (*this) * m2;
+        return (*this) = product;
     }
     MatrixView &operator*=(T s) {
         return (*this) = s * (*this);
@@ -159,6 +159,7 @@ public:
     size_t Width() const { return _width; }
     size_t Dist() const { return _dist; }
     T* Data(){return _data;}
+    const T* Data() const {return _data;}
     MatrixView Cols(size_t first, size_t next) {
         // constructor: size_t height, size_t width, T* data, size_t dist
         return MatrixView(
@@ -213,7 +214,8 @@ public:
     }
 
     MatrixView<T, ORD==Ordering::RowMajor ? Ordering::ColMajor : Ordering::RowMajor> transpose() {
-               return MatrixView<T, ORD==Ordering::RowMajor ? Ordering::ColMajor : Ordering::RowMajor>(_width, _height, _data, ORD == Ordering::RowMajor ? _width : _height);
+        // Keep the stride: sub-views (Rows, Cols, Block) have _dist larger than their width.
+        return MatrixView<T, ORD==Ordering::RowMajor ? Ordering::ColMajor : Ordering::RowMajor>(_width, _height, _data, _dist);
     };
     void RowSwap(size_t row,size_t dest)  {
         for(size_t i=0; i<Width();i++)
@@ -247,12 +249,15 @@ public:
     }
 
     const T& operator()(size_t row, size_t column) const {
-        if ((row < 0) || (row >= Height())){
+#ifndef NDEBUG
+        // Checked only in debug builds: these checks made release code several times slower.
+        if (row >= Height()){
             throw std::invalid_argument(std::string("invalid Matrixview row index ") + std::to_string(row) + " (height: " + std::to_string(Height()) + ")");
         }
-        if ((column < 0) || (column >= Width())){
+        if (column >= Width()){
           throw std::invalid_argument(std::string("invalid Matrixview column index ") + std::to_string(column) + " (width: " + std::to_string(Width()) + ")");
         }
+#endif
         if constexpr (ORD == Ordering::RowMajor) {
             return _data[row * _dist + column];
         } else {
@@ -282,11 +287,11 @@ public:
 
     // initializer list constructor
     Matrix (size_t height, size_t width, std::initializer_list<T> list)
-        : MatrixView<T, ORD> (height, width, new T[list.size()]) {
+        : MatrixView<T, ORD> (height, width, new T[height*width]()) {
         // check if list has the right size
         if (list.size() != _height*_width){
+            delete[] _data;
             throw std::invalid_argument("initializer list does not have right length for matrix shape");
-            return;
         }else{
             // copy list
             for (size_t i = 0; i < list.size(); i++){
@@ -297,7 +302,7 @@ public:
 
     template<typename TB>
     Matrix &operator=(const MatrixExpr<TB> &m2) {
-        if(_width != m2.Width() && _height != m2.Height()){
+        if(_width != m2.Width() || _height != m2.Height()){
             throw std::invalid_argument("Matrix dimension must match for copy");
         }
         for (size_t col = 0; col < _width; col++){
@@ -328,10 +333,13 @@ public:
     }
 
     Matrix &operator=(const Matrix &m2) {
+        if (this == &m2) return *this;
+        if (_width*_height != m2._width*m2._height) {
+            delete[] _data;
+            _data = new T[m2._height*m2._width]();
+        }
         _width = m2._width;
         _height = m2._height;
-        delete[] _data;
-        _data = new T[_height*_width]();
         _dist = m2._dist;
         for (size_t i = 0; i < _width*_height; i++){
             _data[i]=m2._data[i];
@@ -339,13 +347,13 @@ public:
         return *this;
     }
 
-    // Matrix &operator=(Matrix &&m) {
-    //     std::swap(_height, m._height);
-    //     std::swap(_width, m._width);
-    //     std::swap(_data, m._data);
-    //     std::swap(_dist, m._dist);
-    //     return *this;
-    // }
+    Matrix &operator=(Matrix &&m) noexcept {
+        std::swap(_height, m._height);
+        std::swap(_width, m._width);
+        std::swap(_data, m._data);
+        std::swap(_dist, m._dist);
+        return *this;
+    }
 
     Matrix & operator= (std::initializer_list<T> list) {
         if (list.size() != _width*_height){
@@ -378,8 +386,10 @@ class Mat : public MatrixView<T,ORD> {
 
 public:
     Mat()
-            : MatrixView<T,ORD>(HEIGHT, WIDTH, _local_data.data(), ORD == Ordering::RowMajor ? WIDTH : HEIGHT ) {
-                _local_data.fill(0);
+            : MatrixView<T,ORD>(HEIGHT, WIDTH, nullptr, ORD == Ordering::RowMajor ? WIDTH : HEIGHT ) {
+                // Point the view at the array only once the array exists.
+                _data = _local_data.data();
+                _local_data.fill(T{});
             }
 
     Mat(const Mat &m)
@@ -404,7 +414,7 @@ public:
 
     template<typename TB>
     Mat &operator=(const MatrixExpr<TB> &m2) {
-        if(_width != m2.Width() && _height != m2.Height()){
+        if(_width != m2.Width() || _height != m2.Height()){
             throw std::invalid_argument("Matrix dimension must match for copy");
         }
         for (size_t col = 0; col < _width; col++){
@@ -551,7 +561,7 @@ inline Matrix<double> fastMul (MatrixView<double, Ordering::RowMajor> a, MatrixV
         }
     }
 
-    size_t lastrow = (n/4)*4;
+    size_t lastrow = (m/4)*4;  // rows left over after the blocks of four
     // zeilenrest
     for (size_t i = lastrow; i < lastrow + zeilenrest; i++) { // einzelne rest-zeilen
         size_t zeilendist = a.Dist();
@@ -665,23 +675,18 @@ T radToDeg(T deg){
   return 180./M_PI * deg;
 }
 
-// returns rotation matrix for deg degrees around axis: x: 0 y: 1 z: 2
+// Rotation by deg degrees (counter-clockwise, right-hand rule) about axis x: 0, y: 1, z: 2.
 template<typename T>
 Matrix<T> makeRotationMatrix3(int axis, T deg){
     if (axis < 0 || axis > 2) throw std::invalid_argument("axis index out of range");
-
-    // convert degree input to radians
-    double rad = degToRad<T>(deg);
-
-    // create rotation matrix around x axis
-    Matrix<double> R (3, 3, {1, 0,        0,
-                                0, std::cos(rad), -std::sin(rad),
-                                0, std::sin(rad), std::cos(rad)});
-
-    // correct the rotation axis
-    R.ColSwap(0, axis);
-    R.RowSwap(0, axis);
-
+    const T rad = degToRad<T>(deg);
+    const T c = std::cos(rad), s = std::sin(rad);
+    // The other two axes, in cyclic order, span the plane of rotation.
+    const int i = (axis + 1) % 3, j = (axis + 2) % 3;
+    Matrix<T> R(3, 3);
+    R(axis, axis) = 1;
+    R(i, i) = c;  R(i, j) = -s;
+    R(j, i) = s;  R(j, j) = c;
     return R;
 }
 
