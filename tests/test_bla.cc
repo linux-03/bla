@@ -283,25 +283,27 @@ void test_rotation_matrices() {
 template <typename F>
 void checkDerivative(F f, double x, const std::string& what) {
   AutoDiff<1> ad(x, 0);
-  auto r = f(ad);
+  AutoDiff<1> r = f(ad);
   const double h = 1e-6;
   const double fd = (f(AutoDiff<1>(x + h)).Value() - f(AutoDiff<1>(x - h)).Value()) / (2 * h);
   checkNear(r.DValue(0), fd, 1e-7 * (1 + std::fabs(fd)), what);
 }
 
 void test_autodiff_derivatives() {
+  // Lambdas return AD explicitly: an expression returned by value would refer to the
+  // lambda's own parameter after it is gone.
   using AD = AutoDiff<1>;
-  checkDerivative([](AD x) { return x * x * x; }, 1.7, "x^3");
-  checkDerivative([](AD x) { return 3.0 / x; }, 1.7, "3/x");
-  checkDerivative([](AD x) { return x / (x * x + 1.0); }, 0.4, "x/(x^2+1)");
-  checkDerivative([](AD x) { return 2.0 - x; }, 0.4, "2-x");
-  checkDerivative([](AD x) { return sqrt(x * x + 1.0); }, 0.8, "sqrt of a temporary");
-  checkDerivative([](AD x) { return exp(x); }, 0.8, "exp");
-  checkDerivative([](AD x) { return log(x); }, 0.8, "log");
-  checkDerivative([](AD x) { return sin(x) * cos(x); }, 0.8, "sin*cos");
-  checkDerivative([](AD x) { return tan(x); }, 0.8, "tan");
-  checkDerivative([](AD x) { return pow(x, 2.5); }, 1.3, "pow(x, 2.5)");
-  checkDerivative([](AD x) { return pow(x, 2.0); }, -2.0, "pow(x, 2) at a negative base");
+  checkDerivative([](AD x) -> AD { return x * x * x; }, 1.7, "x^3");
+  checkDerivative([](AD x) -> AD { return 3.0 / x; }, 1.7, "3/x");
+  checkDerivative([](AD x) -> AD { return x / (x * x + 1.0); }, 0.4, "x/(x^2+1)");
+  checkDerivative([](AD x) -> AD { return 2.0 - x; }, 0.4, "2-x");
+  checkDerivative([](AD x) -> AD { return sqrt(x * x + 1.0); }, 0.8, "sqrt of a temporary");
+  checkDerivative([](AD x) -> AD { return exp(x); }, 0.8, "exp");
+  checkDerivative([](AD x) -> AD { return log(x); }, 0.8, "log");
+  checkDerivative([](AD x) -> AD { return sin(x) * cos(x); }, 0.8, "sin*cos");
+  checkDerivative([](AD x) -> AD { return tan(x); }, 0.8, "tan");
+  checkDerivative([](AD x) -> AD { return pow(x, 2.5); }, 1.3, "pow(x, 2.5)");
+  checkDerivative([](AD x) -> AD { return pow(x, 2.0); }, -2.0, "pow(x, 2) at a negative base");
   AD z(0.0, 0);
   AD p = pow(z, 2.0);
   check(p.Value() == 0 && p.DValue(0) == 0, "pow(0, 2)");
@@ -312,6 +314,53 @@ void test_autodiff_constructors() {
   check(a.DValue(0) == 1 && a.DValue(1) == 0 && b.DValue(2) == 1, "seed index");
   AutoDiff<3> zero{};
   check(zero.Value() == 0 && zero.DValue(0) == 0 && zero.DValue(2) == 0, "value-initialized AutoDiff is zero");
+}
+
+void test_autodiff_expressions() {
+  // Expression templates must give the same results as the operator-by-operator rules.
+  using AD = AutoDiff<3>;
+  AD x(2.0, 0), y(3.0, 1), z(0.5, 2);
+  AD r = x * y + z * x - y / z;
+  checkNear(r.Value(), 1.0, 1e-15, "value");
+  checkNear(r.DValue(0), 3.5, 1e-15, "d/dx");
+  checkNear(r.DValue(1), 0.0, 1e-15, "d/dy");
+  checkNear(r.DValue(2), 14.0, 1e-15, "d/dz");
+  AD s = 2.0 * x - 1.0 / z + (x - 1.0) * 3.0 + 4.0 - y;
+  checkNear(s.Value(), 4 - 2 + 3 + 4 - 3, 1e-15, "scalar mixes, value");
+  checkNear(s.DValue(0), 5.0, 1e-15, "scalar mixes, d/dx");
+  checkNear(s.DValue(2), 4.0, 1e-15, "scalar mixes, d/dz");
+  checkNear(s.DValue(1), -1.0, 1e-15, "scalar mixes, d/dy");
+  AD neg = -(x * y);
+  checkNear(neg.DValue(0), -3.0, 1e-15, "unary minus");
+  // Aliasing: the result may appear on the right-hand side.
+  AD a = x;
+  a = a * a + a;
+  checkNear(a.Value(), 6.0, 1e-15, "a = a*a + a");
+  checkNear(a.DValue(0), 5.0, 1e-15, "d(a*a + a)");
+  AD b = y;
+  b /= x;
+  b += x * z;
+  checkNear(b.Value(), 2.5, 1e-15, "compound assignment");
+  checkNear(b.DValue(0), -0.75 + 0.5, 1e-15, "compound assignment derivative");
+  // Functions of expressions.
+  AD f = exp(x * z) + log(x + y) + sqrt(x * x + 1.0) + pow(x - y, 2.0);
+  const double want = std::exp(1.0) * 0.5 + 1.0 / 5 + 2 / std::sqrt(5.0) + 2 * (2.0 - 3.0);
+  checkNear(f.DValue(0), want, 1e-13, "functions of expressions");
+  // Temporaries inside an expression stay valid until it is assigned.
+  auto make = [](double v) { return AD(v, 1); };
+  AD t = make(2.0) * make(3.0) + make(1.0);
+  checkNear(t.Value(), 7.0, 1e-15, "temporaries, value");
+  checkNear(t.DValue(1), 6.0, 1e-15, "temporaries, derivative");
+}
+
+void test_autodiff_nested() {
+  using Inner = AutoDiff<3>;
+  using AD2 = AutoDiff<2, Inner>;
+  AD2 p(Inner(2.0, 0), 0), q(Inner(3.0, 1), 1);
+  AD2 r = p * q + 2.0 * p - q / p;
+  checkNear(r.Value().Value(), 8.5, 1e-15, "nested value");
+  checkNear(r.DValue(0).Value(), 5.75, 1e-15, "nested first derivative");
+  checkNear(r.DValue(0).DValue(0), -0.75, 1e-15, "nested second derivative");
 }
 
 void test_autodiff_matrix_products() {
@@ -348,6 +397,8 @@ const std::map<std::string, std::function<void()>>& allTests() {
       {"autodiff_derivatives", test_autodiff_derivatives},
       {"autodiff_constructors", test_autodiff_constructors},
       {"autodiff_matrix_products", test_autodiff_matrix_products},
+      {"autodiff_expressions", test_autodiff_expressions},
+      {"autodiff_nested", test_autodiff_nested},
   };
   return tests;
 }

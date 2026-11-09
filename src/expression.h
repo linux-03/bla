@@ -127,7 +127,7 @@ namespace ASC_bla {
         }
         auto operator()(size_t row, size_t col) const {
             // Start from a true zero. Starting from x - x gives NaN when x is Inf or NaN.
-            std::remove_cv_t<std::remove_reference_t<decltype(a_(0,0)*b_(0,0))>> sum{};
+            ad_value_t<decltype(a_(0,0)*b_(0,0))> sum{};
             for (size_t i = 0; i < a_.Width(); i++) {
                 sum = sum + (a_(row, i) * b_(i, col));
             }
@@ -162,7 +162,7 @@ namespace ASC_bla {
         }
 
         auto operator()(size_t row) const {
-            std::remove_cv_t<std::remove_reference_t<decltype(_m(0,0)*_v(0))>> sum{};
+            ad_value_t<decltype(_m(0,0)*_v(0))> sum{};
             for (size_t i = 0; i < _v.Size(); i++) {
                 sum += _m(row, i) * _v(i);
             }

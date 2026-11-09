@@ -305,8 +305,13 @@ public:
 
             }
 
+    // Storage without zero-fill, for constructors that write every entry.
+    struct Uninitialized {};
+    Matrix(size_t height, size_t width, Uninitialized)
+            : MatrixView<T,ORD>(height, width, new T[height*width], ORD == Ordering::RowMajor ? width : height ) { }
+
     Matrix(const Matrix &m)
-            : Matrix(m.Height(),m.Width()) {
+            : Matrix(m.Height(), m.Width(), Uninitialized{}) {
         *this = m;
     }
 
@@ -352,7 +357,7 @@ public:
 
     template<typename TA>
     Matrix(const MatrixExpr<TA> &m)
-            : Matrix(m.Height(),m.Width()) {
+            : Matrix(m.Height(), m.Width(), Uninitialized{}) {
         *this = m;
     }
 
@@ -503,7 +508,7 @@ MatrixView<T, ORD==Ordering::RowMajor ? Ordering::ColMajor : Ordering::RowMajor>
 
 template <typename T>
 auto Evaluated(const MatrixExpr<T> & m) {
-    using Elem = std::remove_cv_t<std::remove_reference_t<decltype(m.Upcast()(0,0))>>;
+    using Elem = ad_value_t<decltype(m.Upcast()(0,0))>;
     if constexpr (std::is_base_of_v<MatrixView<Elem, Ordering::RowMajor>, T> ||
                   std::is_base_of_v<MatrixView<Elem, Ordering::ColMajor>, T>)
         return m.Upcast().View();

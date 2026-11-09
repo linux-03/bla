@@ -151,7 +151,7 @@ namespace ASC_bla {
     auto operator*(const VecExpr<TA>& a,const VecExpr<TB>& b){
         if(a.Size() != b.Size())
             throw std::invalid_argument("Vector size must match for the inner product");
-        std::remove_cv_t<std::remove_reference_t<decltype(a(0)*b(0))>> sum{};
+        ad_value_t<decltype(a(0)*b(0))> sum{};
         for(size_t i=0; i<a.Size();i++){
             sum += a(i)*b(i);
         }
@@ -168,8 +168,13 @@ namespace ASC_bla {
         explicit Vector(size_t size = 0) 
                 : VectorView<T>(size, size ? new T[size]() : nullptr) { ; }
 
+        // Storage without zero-fill, for constructors that write every entry.
+        struct Uninitialized {};
+        Vector(size_t size, Uninitialized)
+                : VectorView<T>(size, size ? new T[size] : nullptr) { ; }
+
         Vector(const Vector& other)
-                : VectorView<T>(other.Size(), other.Size() ? new T[other.Size()]() : nullptr) {
+                : Vector(other.Size(), Uninitialized{}) {
            std::copy(other.data_, other.data_ + other.size_, data_);
         }
 
@@ -204,7 +209,7 @@ namespace ASC_bla {
 
         template<typename TB>
         Vector(const VecExpr<TB> &v)
-                : Vector(v.Size()) {
+                : Vector(v.Size(), Uninitialized{}) {
             *this = v;
         }
 
@@ -250,7 +255,7 @@ namespace ASC_bla {
     }
     template<typename T>
     auto Norm(const VecExpr<T>& v){
-        decltype(v(0)) sum=0;
+        ad_value_t<decltype(v(0)*v(0))> sum{};
         for(int i=0;i<v.Size();i++)
             sum+=v(i)*v(i);
         return sqrt(sum);
